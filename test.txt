@@ -1,1 +1,233 @@
 1
+import csv
+import numpy as np
+import operator
+import pyodbc
+import time, os 
+import json
+from wsgiref.simple_server import make_server
+
+
+#------------------------------------------------------------------------------------
+#主特征提取算法：
+#计算每个特征所代表维上数据间距的挤压程度，选取程度超过k的所有特征，即为样本的主要特征
+#r为空白率，k为前k个特征属性
+def mainFeature(dataset, labels, r, k):
+    sortDataset = dataset  #为防止原数据集被修改，采用副本进行后续操作
+    sortDataset.sort(axis=1)  #对每维中数据从小到大排序
+    numDimen = sortDataset.shape[0]  #计算维数
+    featureCount = {}
+
+    #计算每一维的空间占有率：
+    for i in range(numDimen):
+        numDataIndimen = sortDataset[i].shape[0]
+        dimenSize = sortDataset[i][-1] - sortDataset[i][0]
+        segmentSize = dimenSize / numDataIndimen  #计算段长
+        blankSize = 0
+        #计算空白长度
+        for j in range(numDataIndimen):
+            if j == (numDataIndimen - 1):
+                break
+            if (sortDataset[i][j+1] - sortDataset[i][j]) > segmentSize:
+                blankSize += sortDataset[i][j+1] - sortDataset[i][j] -segmentSize
+        #计算空白率并将大于r的项添加到一个字典中
+        blankSpaceRate = blankSize / dimenSize
+        if blankSpaceRate > r:
+            featureCount[labels[i][0]] = blankSpaceRate
+    
+    #统计空白率最大的前k个维（即特征）并返回
+    sortedFeatureCount = sorted(featureCount.items(), key=operator.itemgetter(1))
+    sortedFeatureCount = sortedFeatureCount[::-1]
+    
+    sortedFeature = np.array([])
+    for i in range(k):
+        sortedFeature = np.append(sortedFeature, sortedFeatureCount[i][0])
+    
+    return sortedFeature
+   
+#将主要特征组成新的未知病例表
+def sortFeatureDataset(sortedFeature, _labels, dataset):
+    sortedFeatureDataset = np.arange(15000).reshape(-1)
+    labelSize = _labels.shape[0]
+    for i in sortedFeature:
+        for j in range(labelSize):
+            if i == _labels[j][0]:
+                print (dataset[j])
+                sortedFeatureDataset = np.row_stack((sortedFeatureDataset, dataset[j]))
+    sortedFeatureDataset = np.delete(sortedFeatureDataset,0,0)
+    print (sortedFeatureDataset)
+    return sortedFeatureDataset
+
+#------------------------------------------------------------------------------------
+#罗列已知的往年病例所具有的属性条目，和现在未知病例的属性条目比较，选出拥有相同属性的往年病例
+
+def choiceIllness(Datasetcount, tableDataset, table):
+    choiced = np.array([])
+    numtable = table.shape[0]
+    for i in range(numtable):
+        for j in tableDataset[i]:
+            for k in Datasetcount:
+                if  j==k :
+                    choiced = np.append(choiced, table[i])
+                    break
+            break
+    return choiced
+
+#将过滤出来的相同病例重新组合成往年病案表
+def choiceDataset(choiced, tableDataset, table):
+    numtable = tableDataset.shape[0]
+    choiceDataset = np.arange(10).reshape(-1)
+    for i in choiced:
+        for j in range(numtable):
+            if i == table[j]:
+                choiceDataset = np.row_stack((choiceDataset,tableDataset[j]))
+    choiceDataset = np.delete(choiceDataset,0,0)
+    
+    return choiceDataset
+
+#------------------------------------------------------------------------------------
+#计算距离每个未知病例最近的前k个往年病案
+def classify(nowDataset, preDataset, label):
+    DatasetMean = np.mean(nowDataset,axis=0)
+    numlabel = label.shape[0]
+    preDataset = np.subtract(preDataset,DatasetMean)
+    preDataset = np.mean(preDataset, axis=1)
+    sortedpreData = preDataset.argsort()
+    sortedpreData = sortedpreData[::-1]
+    return sortedpreData
+
+#------------------------------------------------------------------------------------
+#读文件并转换为numpy数组
+
+filename = 'F:/微慕课/AI/DAT263x/Lab01/diabetes.csv'
+with open(filename) as f:
+    reader = csv.reader(f)
+    reader = np.array(list(reader))#转为数组
+    reader = np.delete(reader, 0, 0)#去除第一行
+    reader = np.delete(reader, 0, 1)#去除第一列
+    reader = np.array(reader, dtype='float_')#数据格式由‘1’转换为1
+
+    minVals = reader.min(0)
+    maxVals = reader.max(0)
+    ranges = maxVals - minVals
+    normDataSet = np.zeros(np.shape(reader))
+    m = reader.shape[0]
+    normDataSet = reader - np.tile(minVals, (m,1))
+    normDataSet = normDataSet/np.tile(ranges, (m,1))#12-18行代码负责归一化
+
+    normDataSet = normDataSet.T#转置
+   
+filename1 = 'F:/微软创新杯/文档集/featurelabel.csv'
+with open(filename1) as f:
+    reader1 = csv.reader(f)
+    reader1 = np.array(list(reader1))#转为数组
+    reader1 = np.array(reader1, dtype='float_')#数据格式由‘1’转换为1
+
+    normlabel = reader1
+    
+filename2 = 'F:/微软创新杯/文档集/diseaseTable.csv'
+with open(filename2) as f:
+    reader2 = csv.reader(f)
+    reader2 = np.array(list(reader2))#转为数组
+    reader2 = np.array(reader2, dtype='float_')#数据格式由‘1’转换为1
+
+    _table_ = reader2
+
+filename3 = 'F:/微软创新杯/文档集/diseaseCode.csv'
+with open(filename3) as f:
+    reader3 = csv.reader(f)
+    reader3 = np.array(list(reader3))#转为数组
+    reader3 = np.array(reader3, dtype='float_')#数据格式由‘1’转换为1
+
+    disease_code = reader3
+
+filename4 = 'F:/微软创新杯/文档集/diseaseArgu.csv'
+with open(filename4) as f:
+    reader4 = csv.reader(f)
+    reader4 = np.array(list(reader4))#转为数组
+    reader4 = np.array(reader4, dtype='float_')#数据格式由‘1’转换为1
+
+    disease_data = reader4
+
+filename5 = 'F:/微软创新杯/文档集/diseaselabel.csv'
+with open(filename5) as f:
+    reader5 = csv.reader(f)
+    reader5 = np.array(list(reader5))#转为数组
+
+    disease_label = reader5
+#------------------------------------------------------------------------------------
+#参数池：
+k1 = 5  #前k1个特征属性 
+r1 = 0.6  #r为空白率
+k2 = 3  #匹配出来的病案数
+#------------------------------------------------------------------------------------
+#函数调用
+def functions():
+    sorted_Feature = mainFeature(normDataSet, normlabel, r1, k1)
+    sortFDset = sortFeatureDataset(sorted_Feature, normlabel, normDataSet)
+    m = normDataSet.shape[0] - sortFDset.shape[0]
+    n = normDataSet.shape[1]
+
+    sortFDset = sortFDset.T
+    N = [[0]*m for i in range(n)]
+    sortFDset = np.column_stack((sortFDset,N))
+    choice_illness = choiceIllness(sorted_Feature, _table_, disease_code)
+    choice_data = choiceDataset(choice_illness, disease_data, disease_code)
+    sorted_classify = classify(sortFDset, choice_data, disease_label)
+    num_sortedclassify = sorted_classify.shape[0]
+
+#------------------------------------------------------------------------------------
+#数据库相关操作
+    server = 'uestc-mssstudio.database.chinacloudapi.cn'
+    database = 'Image'
+    username = 'TEST'
+    password = 'Hanjiaxing521'
+    driver= '{ODBC Driver 13 for SQL Server}'
+    cnxn = pyodbc.connect('DRIVER='+driver+';SERVER='+server+';PORT=1433;DATABASE='+database+';UID='+username+';PWD='+ password)
+    cursor = cnxn.cursor()
+    for i in range(num_sortedclassify):
+        cursor.execute("INSERT INTO dbo.Maps1 VALUES('"+i+"','N"+sorted_classify[i]+"','"+choice_data[i]+"')")
+    
+#row = cursor.fetchone()
+#while row:
+    #print (str(row[0]) + " " + str(row[1]))
+    #row = cursor.fetchone()
+
+#------------------------------------------------------------------------------------
+
+
+def application(environ, start_response):
+    # 定义文件请求的类型和当前请求成功的code
+    start_response('200 OK', [('Content-Type', 'application/json')])
+    # environ是当前请求的所有数据，包括Header和URL，body
+ 
+    request_body = environ["wsgi.input"].read(int(environ.get("CONTENT_LENGTH", 0)))
+    request_body = json.loads(request_body)
+ 
+    name = request_body["name"]
+    no = request_body["no"]
+    #要执行的方法：
+    functions
+
+    dic = {'myNameIs': name, 'myNoIs': no}
+ 
+    return [json.dumps(dic)]
+
+#------------------------------------------------------------------------------------
+#coding=utf-8
+# 以需要的时间间隔执行某个命令 
+def re_exe(cmd, inc): 
+    while True: 
+        cmd
+        time.sleep(inc) 
+#------------------------------------------------------------------------------------
+#主函数：
+def main():
+    port = 6088
+    httpd = make_server("0.0.0.0", port, application)
+    #print "serving http on port {0}...".format(str(port))
+    httpd.serve_forever()
+
+#------------------------------------------------------------------------------------
+#运行：
+re_exe(main, 5)
